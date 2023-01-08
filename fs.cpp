@@ -25,6 +25,7 @@ FS::format()
     dir_entry* blk = new dir_entry[64];
     dir_entry dir;
     dir.size = 0;
+    dir.first_blk = 0;
     for(int i = 0; i < 64; i++) {
         memcpy(&blk[i], &dir, sizeof(dir_entry));
     }
@@ -49,7 +50,7 @@ int
 FS::create(std::string filepath)
 {
     if(filepath.size() > 55) {
-        std::cout << "FS::create( " << filepath << " ) -> filepath too long (>55)" << std::endl;
+        std::cout << "FS::create(" << filepath << ") -> filepath too long (>55)" << std::endl;
         return 1;
     }
     std::cout << "FS::create(" << filepath << ")\n";
@@ -68,6 +69,8 @@ FS::create(std::string filepath)
         std::getline(std::cin, data);
     }
     file->size = data_size.size();
+    float nr_needed_blksf = (float)data_size.size() / 4096;
+    int nr_needed_blks = ceil(nr_needed_blksf);
     
     // Init file type
     file->type = 0; // (1) = directory, (0) = file
@@ -78,19 +81,40 @@ FS::create(std::string filepath)
     // Init (Save) data
     uint8_t* blk = new uint8_t[4096];
     this->disk.read(1, blk);
-    uint16_t* fat_entries = (uint16_t*)blk;
+    int16_t* fat_entries = (int16_t*)blk;
     int block_no;
 
+    std::vector<int> blk_needed;
     for(int i = 2; i < 2048; i++) {
         if(fat_entries[i] == FAT_FREE) {
-            block_no = i;
-            file->first_blk = block_no;
-            fat_entries[i] = FAT_EOF;
-            this->disk.write(block_no, (uint8_t*)(char*)data_size.c_str());
-            this->disk.write(1, (uint8_t*)fat_entries);
-            break;
+            if(nr_needed_blks > 1) {
+                blk_needed.push_back(i);
+                nr_needed_blks--;
+            } else {
+                blk_needed.push_back(i);
+                break;
+            }
         }
     }
+    file->first_blk = blk_needed[0];
+
+    int current_blk;
+    int tmp_blk = blk_needed[0];
+    if (blk_needed.size() == 1) {
+        fat_entries[tmp_blk] = FAT_EOF;
+        this->disk.write(tmp_blk, (uint8_t*)(char*)data_size.c_str());
+    } else {
+        for(int i = 0; i < blk_needed.size(); i++) {
+            current_blk = tmp_blk;
+            tmp_blk = blk_needed[i];
+            fat_entries[current_blk] = tmp_blk;
+            this->disk.write(tmp_blk, (uint8_t*)(char*)data_size.substr(i*4096, (i+1)*4096).c_str());
+        }
+        fat_entries[tmp_blk] = FAT_EOF;
+    }
+    this->disk.write(1, (uint8_t*)fat_entries);
+
+
     // Maybe add error handling here
     delete[] blk, fat_entries;
 
@@ -101,7 +125,6 @@ FS::create(std::string filepath)
 
     for(int i = 0; i < 64; i++) {
         if(dir_entries[i].size == 0) {
-            // std::cout << std::to_string(block_no) << std::endl;
             memcpy(&dir_entries[i], file, sizeof(dir_entry));
             this->disk.write(0, blk);
             delete[] blk, dir_entries;
@@ -109,7 +132,7 @@ FS::create(std::string filepath)
         }
     }
 
-    std::cout << "FS::create( " << filepath << " ) -> disk entry is full (>64)" << std::endl;
+    std::cout << "FS::create(" << filepath << ") -> disk entry is full (>64)" << std::endl;
     return 1;    
 }
 
@@ -123,17 +146,28 @@ FS::cat(std::string filepath)
     this->disk.read(0, blk);
     dir_entry* dir_entries = (dir_entry*)blk;
 
+    uint8_t* blk_2 = new uint8_t[4096];
+    this->disk.read(1, blk_2);
+    int16_t* fat_entries = (int16_t*)blk_2;
+
+    std::string data;
     for(int i = 0; i < 64; i++) {
         if(dir_entries[i].file_name == filepath) {
-            uint8_t* file = new uint8_t[4096];
-            this->disk.read(dir_entries[i].first_blk, file);
-            std::string file_s = (char*)file;
-            std::cout << file_s << std::endl;
+            int nr_needed_blks = ceil((float)dir_entries[i].size / 4096), current_blk = dir_entries[i].first_blk; 
+
+            for(int j = 0; j < nr_needed_blks; j++) {
+                uint8_t* file = new uint8_t[4096];
+                this->disk.read(current_blk, file);
+                std::string output = (char*)file;
+                std::cout << output.substr(0, std::min((int)dir_entries[i].size - 4096*j, 4096));
+                current_blk = fat_entries[current_blk];
+            }
+            std::cout << std::endl;
             return 0;
         }
     }
 
-    std::cout << "FS::Cat( " << filepath << " ) -> Could not find filepath" << std::endl;
+    std::cout << "FS::Cat(" << filepath << ") -> Could not find filepath" << std::endl;
     return 1;
 }
 
@@ -181,7 +215,7 @@ FS::cp(std::string sourcepath, std::string destpath)
     }
 
     if(sourcepath_found == false) {
-        std::cout << "FS::cp( " << sourcepath << ", " <<  destpath << " ) -> cant cp to a non-existing file" << std::endl;
+        std::cout << "FS::cp(" << sourcepath << ", " <<  destpath << ") -> cant cp to a non-existing file" << std::endl;
         return 1;
     }
 
@@ -191,27 +225,49 @@ FS::cp(std::string sourcepath, std::string destpath)
 
     for(int i = 0; i < 64; i++) {
         if(dir_entries[i].file_name == destpath) {
-            std::cout << "FS::cp( " << sourcepath << ", " <<  destpath << " ) -> cant cp to an existing file" << std::endl;
+            std::cout << "FS::cp(" << sourcepath << ", " <<  destpath << ") -> cant cp to an existing file" << std::endl;
             return 1;
         }
     }
 
-
-
     blk = new uint8_t[4096];
     this->disk.read(1, blk);
-    uint16_t* fat_entries = (uint16_t*)blk;
-    int block_no;
+    int16_t* fat_entries = (int16_t*)blk;
+    int nr_needed_blks = ceil((float)source_dir->size / 4096);
 
+
+    std::vector<int> blk_needed;
     for(int i = 2; i < 2048; i++) {
         if(fat_entries[i] == FAT_FREE) {
-            block_no = i;
-            fat_entries[i] = FAT_EOF;
-            this->disk.write(block_no, (uint8_t*)source_dir);
-            this->disk.write(1, (uint8_t*)fat_entries);
-            break;
+            if(nr_needed_blks > 1) {
+                blk_needed.push_back(i);
+                nr_needed_blks--;
+            } else {
+                blk_needed.push_back(i);
+                break;
+            }
         }
     }
+
+    int source_blk = source_dir->first_blk, cpy_blk = blk_needed[0];
+    source_dir->first_blk = cpy_blk;
+    uint8_t* content = new uint8_t[4096];
+    this->disk.read(source_blk, content);
+    this->disk.write(cpy_blk, content);
+
+    for(int i = 1; i < blk_needed.size(); i++) {
+        fat_entries[cpy_blk] = blk_needed[i];
+        
+        cpy_blk = fat_entries[cpy_blk];
+        source_blk = fat_entries[source_blk];
+
+        content = new uint8_t[4096];
+        this->disk.read(source_blk, content);
+        this->disk.write(blk_needed[0], content);
+    }
+    fat_entries[cpy_blk] = FAT_EOF;
+    this->disk.write(1, (uint8_t*)fat_entries);
+
     // Maybe add error handling here
     delete[] blk, fat_entries;
 
@@ -222,7 +278,6 @@ FS::cp(std::string sourcepath, std::string destpath)
 
     for(int i = 0; i < 64; i++) {
         if(dir_entries[i].size == 0) {
-            // std::cout << std::to_string(block_no) << std::endl;
             memcpy(&dir_entries[i], source_dir, sizeof(dir_entry));
             this->disk.write(0, blk);
             delete[] blk, dir_entries;
@@ -247,14 +302,14 @@ FS::mv(std::string sourcepath, std::string destpath)
 
     for(int i = 0; i < 64; i++) {
         if(dir_entries[i].file_name == destpath) {
-            std::cout << "FS::mv( " << sourcepath << ", " <<  destpath << " ) -> Can't overwrite existing file" << std::endl;
+            std::cout << "FS::mv(" << sourcepath << ", " <<  destpath << ") -> Can't overwrite existing file" << std::endl;
             return 1;
         }
     }
 
-    blk = new uint8_t[4096];
-    this->disk.read(0, blk);
-    dir_entries = (dir_entry*)blk;
+    // blk = new uint8_t[4096];
+    // this->disk.read(0, blk);
+    // dir_entries = (dir_entry*)blk;
 
     for(int i = 0; i < 64; i++) {
         if(dir_entries[i].file_name == sourcepath) {
@@ -266,7 +321,7 @@ FS::mv(std::string sourcepath, std::string destpath)
         }
     }
 
-    std::cout << "FS::mv( " << sourcepath << ", " <<  destpath << " ) -> Couldnt find sourcepath" << std::endl;
+    std::cout << "FS::mv(" << sourcepath << ", " <<  destpath << ") -> Couldnt find sourcepath" << std::endl;
     return 1;
 }
 
@@ -277,40 +332,42 @@ FS::rm(std::string filepath)
     std::cout << "FS::rm(" << filepath << ")\n";
 
     dir_entry* empty_dir = new dir_entry; empty_dir->size = 0;
-    int blk_no;
     bool filepath_found = false;
 
     uint8_t* blk = new uint8_t[4096];
     this->disk.read(0, blk);
     dir_entry* dir_entries = (dir_entry*)blk;
+    int nr_needed_blks, frst_blk;
 
     for(int i = 0; i < 64; i++) {
         if(dir_entries[i].file_name == filepath) {
             filepath_found = true;
+            nr_needed_blks = ceil((float)dir_entries[i].size / 4096);
+            frst_blk = dir_entries[i].first_blk;
             memcpy(&dir_entries[i], empty_dir, sizeof(dir_entry));
             this->disk.write(0, blk);
             delete[] blk, dir_entries;
-            return 0;
         }
     }
-
     if(filepath_found == false) {
-        std::cout << "FS::rm( " << filepath << ") -> cant remove non-existing file" << std::endl;
+        std::cout << "FS::rm(" << filepath << ") -> cant remove non-existing file" << std::endl;
         return 1;
     }
 
     blk = new uint8_t[4096];
     this->disk.read(1, blk);
     uint16_t* fat_entries = (uint16_t*)blk;
-    int block_no;
 
-    for(int i = 2; i < 2048; i++) {
-        if(i == blk_no) {
-            fat_entries[i] = FAT_FREE;
-            this->disk.write(1, (uint8_t*)fat_entries);
-            break;
-        }
+    int current_blk;
+    int tmp_blk = frst_blk;
+    for(int i = 0; i < nr_needed_blks; i++) {
+        current_blk = tmp_blk;
+        tmp_blk = fat_entries[current_blk];
+        fat_entries[current_blk] = FAT_FREE;
     }
+    this->disk.write(1, (uint8_t*)fat_entries);
+
+    delete[] blk, fat_entries;
 
     return 0;
 }
@@ -325,19 +382,18 @@ FS::append(std::string filepath1, std::string filepath2)
     uint8_t* blk = new uint8_t[4096];
     this->disk.read(0, blk);
     dir_entry* dir_entries = (dir_entry*)blk;
-    bool filepath1_found = false, filepath2_found = false; int blk_source, blk_destination;
+    bool filepath1_found = false, filepath2_found = false;
 
-    dir_entry* file2_copy;
+    dir_entry *file2_copy, *file_copy;
 
     for(int i = 0; i < 64; i++) {
         if(dir_entries[i].file_name == filepath1) {
             filepath1_found = true;
-            blk_source = dir_entries[i].first_blk;
+            file_copy = &dir_entries[i];
         }
         if(dir_entries[i].file_name == filepath2) {
             filepath2_found = true;
             file2_copy = &dir_entries[i];
-            blk_destination = dir_entries[i].first_blk;
         }
     }
 
@@ -346,22 +402,81 @@ FS::append(std::string filepath1, std::string filepath2)
         return 1;
     }
 
-    uint8_t* file1 = new uint8_t[4096];
-    this->disk.read(blk_source, file1);
 
-    uint8_t* file2 = new uint8_t[4096];
-    this->disk.read(blk_destination, file2);
-
-    file2_copy->size = strlen(strcat((char*)file2, (char*)file1));
-    this->disk.write(0, blk);
+    uint8_t* fat_ent = new uint8_t[4096];
+    this->disk.read(1, fat_ent);
+    int16_t* fat_entries = (int16_t*)fat_ent;
+    std::string data;
+    int nr_needed_blks = ceil((float)file_copy->size / 4096), current_blk = file_copy->first_blk;
 
 
-    // Saving new concat data to block destination, only need to save file2 because
-    // strcat above Append file1 to file2 (src to dest)
-    this->disk.write(blk_destination, (uint8_t*)(char*)file2);
+// Get data from filepath1
+    uint8_t* file = new uint8_t[4096];
+    this->disk.read(current_blk, file);
+    // this->disk.write(blk_needed[i], file);
+    data += (char*)file;
 
-    delete[] blk, dir_entries;
-    delete[] file1, file2;
+    for(int i = 1; i < nr_needed_blks; i++) {
+        file = new uint8_t[4096];
+        this->disk.read(current_blk, file);
+        // this->disk.write(blk_needed[i], file);
+        data += (char*)file;
+        // fat_entries[file_blk] = blk_needed[i];
+
+        // file_blk = fat_entries[file_blk];
+        current_blk = fat_entries[current_blk];
+    }
+
+    int file_blk = file2_copy->first_blk;
+    while(fat_entries[file_blk] != FAT_EOF) {
+        file_blk = fat_entries[file_blk];
+    }
+
+    int rest_size = 4096-file2_copy->size % 4096;
+    file = new uint8_t[4096];
+    this->disk.read(file_blk, file);
+    std::string file_s = (char*)file;
+    file_s += data.substr(0, std::min((int)data.size(),rest_size));
+    this->disk.write(file_blk, (uint8_t*)file_s.c_str());
+
+    nr_needed_blks = ceil((float)(data.size() - std::min((int)data.size(),rest_size)) / 4096);
+    std::vector<int> blk_needed;
+    for(int i = 2; i < 2048; i++) {
+        if(fat_entries[i] == FAT_FREE) {
+            if(nr_needed_blks > 1) {
+                blk_needed.push_back(i);
+                nr_needed_blks--;
+            } else {
+                blk_needed.push_back(i);
+                break;
+            }
+        }
+    }
+    std::string testimus_prime = data.substr(std::min((int)data.size(),rest_size), data.size());
+    this->disk.write(blk_needed[0], (uint8_t*)testimus_prime.c_str());
+    fat_entries[file_blk] = blk_needed[0];
+    
+    for(int i = 1; i < blk_needed.size(); i++) {
+        int yo = data.size() + file_s.size() - std::min((int)data.size(),rest_size);
+        this->disk.write(blk_needed[i], (uint8_t*)data.substr(std::min(4096, yo)).c_str());
+        fat_entries[file_blk] = blk_needed[i];
+        file_blk = fat_entries[file_blk];
+        yo -= std::min(4096, yo);
+    }
+    file2_copy->size += file_copy->size;
+    this->disk.write(0, (uint8_t*)dir_entries);
+
+
+
+    // file2_copy->size = strlen(strcat((char*)file2, (char*)file1));
+    // this->disk.write(0, blk);
+
+
+    // // Saving new concat data to block destination, only need to save file2 because
+    // // strcat above Append file1 to file2 (src to dest)
+    // this->disk.write(blk_destination, (uint8_t*)(char*)file2);
+
+    delete[] blk, dir_entries, file;
 
     return 0;
 }
