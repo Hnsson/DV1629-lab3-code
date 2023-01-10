@@ -6,12 +6,35 @@ bool FS::privilege_check(uint8_t access_rights, uint8_t required_privilege) {
 }
 
 int FS::get_current_dir_blk(std::string dir_path) {
+    // Om startar med / så ska den vara absolut
+    // Om den inte startar med / så ska man ta pathen som går från current_path + dir_path
+    std::string wanted_path;
     int current_dir_blk = 0;
 
-    std::stringstream ss(dir_path);
+
+    if(dir_path.find_first_of('/') == 0) {
+        wanted_path = dir_path;
+    } else if(dir_path.find("../") != std::string::npos) {
+        wanted_path = current_dir + '/' +dir_path;
+        std::cout << "Original wanted path: " << wanted_path << std::endl;
+        int i = 2;
+        while(wanted_path.find("../") != std::string::npos) {
+            wanted_path = wanted_path.substr(0, wanted_path.find("../")-1);
+            wanted_path = wanted_path.substr(0, wanted_path.find_last_of('/'));
+            if(wanted_path.empty()) break;
+            wanted_path += dir_path.substr(dir_path.find("../")+2, dir_path.size());
+        }
+    } else {
+        wanted_path = current_dir + '/' + dir_path;
+    }
+
+    std::cout << "Result Wanted path: " << wanted_path << std::endl;
+
+    std::stringstream ss(wanted_path);
     std::string path;
     while (!ss.eof()) {
         std::getline(ss, path, '/');
+        std::cout << "" << path << std::endl;
 
         uint8_t* blk = new uint8_t[4096];
         disk.read(current_dir_blk, blk);
@@ -262,11 +285,11 @@ FS::cp(std::string sourcepath, std::string destpath)
 {
     std::cout << "FS::cp(" << sourcepath << "," << destpath << ")\n";
 
-    std::string sourcepath_dir = sourcepath.substr(0, sourcepath.find_last_of('/'));
+    std::string sourcepath_dir = sourcepath.substr(0, sourcepath.find_last_of('/')+1);
     std::string sourcepath_filename = sourcepath.substr(sourcepath.find_last_of('/')+1, sourcepath.size());
     int source_dir_blk = get_current_dir_blk(sourcepath_dir);
 
-    std::string destpath_dir = destpath.substr(0, destpath.find_last_of('/'));
+    std::string destpath_dir = destpath.substr(0, destpath.find_last_of('/')+1);
     std::string destpath_filename = destpath.substr(destpath.find_last_of('/')+1, destpath.size());
     int dest_dir_blk = get_current_dir_blk(destpath_dir);
 
@@ -368,12 +391,12 @@ FS::mv(std::string sourcepath, std::string destpath)
 {
     std::cout << "FS::mv(" << sourcepath << "," << destpath << ")\n";
 
-    std::string sourcepath_dir = sourcepath.substr(0, sourcepath.find_last_of('/'));
+    std::string sourcepath_dir = sourcepath.substr(0, sourcepath.find_last_of('/')+1);
     std::string sourcepath_filename = sourcepath.substr(sourcepath.find_last_of('/')+1, sourcepath.size());
     if(sourcepath_dir == sourcepath_filename) sourcepath_dir = "/";
     int source_dir_blk = get_current_dir_blk(sourcepath_dir);
 
-    std::string destpath_dir = destpath.substr(0, destpath.find_last_of('/'));
+    std::string destpath_dir = destpath.substr(0, destpath.find_last_of('/')+1);
     std::string destpath_filename = destpath.substr(destpath.find_last_of('/')+1, destpath.size());
     if(destpath_dir == destpath_filename) destpath_dir = "/";
     int dest_dir_blk = get_current_dir_blk(destpath_dir);
@@ -734,10 +757,8 @@ FS::cd(std::string dirpath)
     std::cout << "FS::cd(" << dirpath << ")\n";
     if(dirpath == ".."){
         if(current_dir.length() > 1){
-            std::cout << current_dir << std::endl;
             current_dir = current_dir.substr(0, current_dir.length()-2);
             current_dir = current_dir.substr(0, current_dir.find_last_of("/"));
-            std::cout << current_dir << std::endl;
             return 0;
         }
     } else {
