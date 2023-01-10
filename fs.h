@@ -34,12 +34,14 @@ private:
     Disk disk;
     // size of a FAT entry is 2 bytes
     // Ta bort senare
-    int16_t fat[BLOCK_SIZE/2];
+    // int16_t fat[BLOCK_SIZE/2];
     std::string current_dir;
     // Privilege check that looks at current access rights <access_rights> compared with given privilege check <required_privilege>
     // and return either false or true if access rights <access_rights> has the required privilege <required_privilege>
     bool privilege_check(uint8_t access_rights, uint8_t required_privilege);
+    // std::string privilege_to_string(uint8_t privilege);
     int get_current_dir_blk(std::string dir_path);
+    std::string privilege_to_string(uint8_t privilege);
 public:
     FS();
     ~FS();
